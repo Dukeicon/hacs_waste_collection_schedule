@@ -3,6 +3,7 @@ import json
 import re
 import time
 
+import dateutil.parser
 import requests
 from bs4 import BeautifulSoup
 from requests.utils import requote_uri
@@ -59,6 +60,27 @@ class Source:
     def __init__(self, address: str):
         self.address = address.strip()
 
+    def _make_request_with_retry(self, session, url, headers, max_retries=3, timeout=30):
+        """Make HTTP request with retry logic and exponential backoff"""
+        for attempt in range(max_retries):
+            try:
+                r = session.get(url, headers=headers, timeout=timeout)
+                
+                if r.status_code == 200:
+                    return r
+                elif r.status_code == 403 and attempt < max_retries - 1:
+                    time.sleep(2 ** attempt)  # Exponential backoff
+                    continue
+                else:
+                    raise Exception(f"Failed to fetch: {r.status_code} (attempt {attempt + 1})")
+                    
+            except requests.RequestException as e:
+                if attempt == max_retries - 1:
+                    raise Exception(f"Network error: {str(e)}")
+                time.sleep(2 ** attempt)
+        
+        return None
+
     def fetch(self):
         location_id = None
 
@@ -94,23 +116,7 @@ class Source:
         q = requote_uri(str(API_URLS["address_search"]).format(address))
 
         # Retrieve address search results with retry logic
-        max_retries = 3
-        for attempt in range(max_retries):
-            try:
-                r = session.get(q, headers=api_headers, timeout=30)
-                
-                if r.status_code == 200:
-                    break
-                elif r.status_code == 403 and attempt < max_retries - 1:
-                    time.sleep(2 ** attempt)  # Exponential backoff
-                    continue
-                else:
-                    raise Exception(f"Failed to fetch address search: {r.status_code} (attempt {attempt + 1})")
-                    
-            except requests.RequestException as e:
-                if attempt == max_retries - 1:
-                    raise Exception(f"Network error during address search: {str(e)}")
-                time.sleep(2 ** attempt)
+        r = self._make_request_with_retry(session, q, api_headers)
 
         # Handle potential bot protection response
         if r.status_code != 200:
@@ -140,22 +146,7 @@ class Source:
         q = requote_uri(str(API_URLS["collection"]).format(location_id))
 
         # Retry logic for waste services API
-        for attempt in range(max_retries):
-            try:
-                r = session.get(q, headers=api_headers, timeout=30)
-                
-                if r.status_code == 200:
-                    break
-                elif r.status_code == 403 and attempt < max_retries - 1:
-                    time.sleep(2 ** attempt)
-                    continue
-                else:
-                    raise Exception(f"Failed to fetch waste services: {r.status_code} (attempt {attempt + 1})")
-                    
-            except requests.RequestException as e:
-                if attempt == max_retries - 1:
-                    raise Exception(f"Network error during waste services fetch: {str(e)}")
-                time.sleep(2 ** attempt)
+        r = self._make_request_with_retry(session, q, api_headers)
 
         if r.status_code != 200:
             raise Exception(f"Unable to access Woollahra waste services API (status: {r.status_code})")
@@ -217,52 +208,7 @@ class Source:
 
     def _parse_date(self, date_text: str) -> datetime.date:
         """Parse various date formats found in the response"""
-
-        # Clean up the date text
-        date_text = date_text.replace("\r", "").replace("\n", "").strip()
-        
-        # For regular collections: "Mon 29/9/2025"
-        regular_date_match = re.search(r"(Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+(\d{1,2}/\d{1,2}/\d{4})", date_text)
-        if regular_date_match:
-            try:
-                date_str = regular_date_match.group(2)
-                return datetime.datetime.strptime(date_str, "%d/%m/%Y").date()
-            except ValueError:
-                pass
-        
-        # For scheduled clean-ups: "Mon 8 September 2025"
-        cleanup_date_match = re.search(r"(Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})", date_text)
-        if cleanup_date_match:
-            try:
-                day = cleanup_date_match.group(2)
-                month_name = cleanup_date_match.group(3)
-                year = cleanup_date_match.group(4)
-                date_str = f"{day} {month_name} {year}"
-                return datetime.datetime.strptime(date_str, DATE_FORMAT_LONG).date()
-            except ValueError:
-                pass
-        
-        # Alternative format: "5 January 2026"
-        alt_date_match = re.search(r"(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})", date_text)
-        if alt_date_match:
-            try:
-                day = alt_date_match.group(1)
-                month_name = alt_date_match.group(2)
-                year = alt_date_match.group(3)
-                date_str = f"{day} {month_name} {year}"
-                return datetime.datetime.strptime(date_str, DATE_FORMAT_LONG).date()
-            except ValueError:
-                pass
-        
-        # Alternative format: "15 June 2026"
-        june_date_match = re.search(r"(\d{1,2})\s+June\s+(\d{4})", date_text)
-        if june_date_match:
-            try:
-                day = june_date_match.group(1)
-                year = june_date_match.group(2)
-                date_str = f"{day} June {year}"
-                return datetime.datetime.strptime(date_str, DATE_FORMAT_LONG).date()
-            except ValueError:
-                pass
-                
-        return None
+        try:
+            return dateutil.parser.parse(date_text, dayfirst=True, fuzzy=True).date()
+        except (dateutil.parser.ParserError, OverflowError) as e:
+            return None
