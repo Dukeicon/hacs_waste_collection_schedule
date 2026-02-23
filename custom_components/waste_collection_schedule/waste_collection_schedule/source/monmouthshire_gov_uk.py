@@ -25,7 +25,7 @@ API_URL = "https://maps.monmouthshire.gov.uk/localinfo.aspx"
 
 ICON_MAP = {
     "Blue food bin": "mdi:food",
-    "Garden Waste Bins (pay to use service)": "mdi:leaf",
+    "Garden Waste Bins": "mdi:leaf",
     "Green Glass Box": "mdi:glass-fragile",
     "Household rubbish bag": "mdi:trash-can",
     "Red & purple recycling bags": "mdi:recycling",
@@ -147,6 +147,8 @@ class Source:
 
                 if waste_h4 and collection_strong:
                     waste_type = " ".join(waste_h4.get_text().split())
+                    # Remove unwanted part of title
+                    waste_type = waste_type.replace(" (pay to use service)", "")
 
                     collection_date_text = collection_strong.get_text(strip=True)
 
